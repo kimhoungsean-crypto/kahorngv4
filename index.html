@@ -43,47 +43,40 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(console.error);
 }
 // ---- Session-token bridge (see JavaScript.html: "WRAPPER BRIDGE") ----
-// On iOS, a Home Screen web app runs standalone, and WebKit applies much
-// stricter storage rules to the iframed app (script.google.com) in that
-// context than to this page — writes from inside the iframe can silently
-// fail to survive a force-quit + relaunch even though nothing ever
-// throws an error. This page IS first-party from iOS's point of view and
-// doesn't have that restriction, so it holds the durable copy of the
-// session token instead, and hands it to the app on request.
-//
-// No hardcoded expected origin here (a previous version checked
-// e.origin against 'https://script.google.com' — Apps Script's /exec URL
-// commonly redirects internally to a different rendering domain, e.g. a
-// script.googleusercontent.com subdomain, to actually serve the page, so
-// that check could silently never match and drop every message). Instead,
-// e.source === appFrame.contentWindow is the actual security boundary
-// here: it's a direct comparison of the window object itself, verified
-// by the browser, and proves the message came from our own embedded
-// iframe regardless of what domain it's currently being served from.
 var TOKEN_KEY = 'kahorng_session_token';
 var appFrame = document.getElementById('app-frame');
+
+// TEMPORARY DIAGNOSTIC — mirrors every step here into the same on-screen
+// panel the iframe side already shows (this page itself is fully covered
+// by the iframe, so there's no other way to see what's happening on this
+// side without this). '*' is fine — appFrame.contentWindow is a direct
+// reference to our own iframe, not a broadcast to unknown parties.
+function wdebug(msg) {
+    try { appFrame.contentWindow.postMessage({ source: 'kahorng-wrapper', type: 'debug', msg: msg }, '*'); } catch (err) { /* iframe not ready yet, or gone */ }
+}
+
 window.addEventListener('message', function (e) {
+    wdebug('listener fired — source===appFrame.contentWindow? ' + (e.source === appFrame.contentWindow) + ', data=' + JSON.stringify(e.data));
+
     if (e.source !== appFrame.contentWindow) return; // must be our own iframe, not some other frame
     if (!e.data || e.data.source !== 'kahorng-app') return;
 
     if (e.data.type === 'ready') {
         var token = null;
-        try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (err) { /* nothing to hand back */ }
-        // '*' is fine here — appFrame.contentWindow is a direct reference
-        // to our own embedded iframe, not a broadcast to unknown parties.
+        try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (err) { wdebug('reading storage THREW: ' + err.message); }
+        wdebug('replying to ready — token ' + (token ? 'present' : 'null'));
         appFrame.contentWindow.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, '*');
     } else if (e.data.type === 'token-changed') {
         try {
             if (e.data.token) {
-                // Mirrors the app's own Remember-me choice: persistent
-                // storage for "remembered" logins, session-only otherwise.
                 if (e.data.remember) { localStorage.setItem(TOKEN_KEY, e.data.token); sessionStorage.removeItem(TOKEN_KEY); }
                 else { sessionStorage.setItem(TOKEN_KEY, e.data.token); localStorage.removeItem(TOKEN_KEY); }
             } else {
                 localStorage.removeItem(TOKEN_KEY);
                 sessionStorage.removeItem(TOKEN_KEY);
             }
-        } catch (err) { /* first-party storage should work here, but never let this crash the wrapper */ }
+            wdebug('token-changed handled, stored ' + (e.data.token ? 'present' : 'null'));
+        } catch (err) { wdebug('storing token THREW: ' + err.message); }
     }
 });
 </script>

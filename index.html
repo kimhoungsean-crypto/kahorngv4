@@ -46,26 +46,30 @@ if ('serviceWorker' in navigator) {
 var TOKEN_KEY = 'kahorng_session_token';
 var appFrame = document.getElementById('app-frame');
 
-// TEMPORARY DIAGNOSTIC — mirrors every step here into the same on-screen
-// panel the iframe side already shows (this page itself is fully covered
-// by the iframe, so there's no other way to see what's happening on this
-// side without this). '*' is fine — appFrame.contentWindow is a direct
-// reference to our own iframe, not a broadcast to unknown parties.
+// TEMPORARY DIAGNOSTIC. Replies go via e.source (whichever window actually
+// sent the message) rather than appFrame.contentWindow — if Apps Script's
+// own content sandboxing puts the app an extra frame level deeper than
+// this wrapper's direct iframe, appFrame.contentWindow only reaches that
+// first level, which may not be where the app's script is actually
+// running; e.source is correct regardless of how many levels deep it is.
+var lastAppSource = null; // remembers wherever we last heard from, for wdebug() before any reply has gone out yet
 function wdebug(msg) {
-    try { appFrame.contentWindow.postMessage({ source: 'kahorng-wrapper', type: 'debug', msg: msg }, '*'); } catch (err) { /* iframe not ready yet, or gone */ }
+    var target = lastAppSource || appFrame.contentWindow;
+    try { target.postMessage({ source: 'kahorng-wrapper', type: 'debug', msg: msg }, '*'); } catch (err) { /* nowhere to send this yet */ }
 }
 
 window.addEventListener('message', function (e) {
-    wdebug('listener fired — source===appFrame.contentWindow? ' + (e.source === appFrame.contentWindow) + ', data=' + JSON.stringify(e.data));
+    if (e.source === window) return; // ignore our own messages, avoid any possible loop
+    wdebug('listener fired — data=' + JSON.stringify(e.data) + ', source===appFrame.contentWindow? ' + (e.source === appFrame.contentWindow));
 
-    if (e.source !== appFrame.contentWindow) return; // must be our own iframe, not some other frame
     if (!e.data || e.data.source !== 'kahorng-app') return;
+    lastAppSource = e.source;
 
     if (e.data.type === 'ready') {
         var token = null;
         try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (err) { wdebug('reading storage THREW: ' + err.message); }
-        wdebug('replying to ready — token ' + (token ? 'present' : 'null'));
-        appFrame.contentWindow.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, '*');
+        wdebug('replying to ready via e.source — token ' + (token ? 'present' : 'null'));
+        e.source.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, '*');
     } else if (e.data.type === 'token-changed') {
         try {
             if (e.data.token) {

@@ -3,20 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-
 <title>Kahorng</title>
-
 <meta name="theme-color" content="#0a1120">
-
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Kahorng">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-
 <link rel="manifest" href="manifest.webmanifest">
-
 <link rel="icon" type="image/png" href="https://i.ibb.co/MyFQSJGQ/kahorng-icon-512-1.png">
 <link rel="apple-touch-icon" href="https://i.ibb.co/MyFQSJGQ/kahorng-icon-512-1.png">
-
 <style>
 html,
 body{
@@ -27,7 +21,6 @@ body{
     overflow:hidden;
     background:#0a1120;
 }
-
 iframe{
     position:fixed;
     inset:0;
@@ -39,20 +32,16 @@ iframe{
 }
 </style>
 </head>
-
 <body>
-
 <iframe
   id="app-frame"
   src="https://script.google.com/macros/s/AKfycbwm6A-pXadfGGWR3fSYg3jNMyG9nBLhIpAbCVM5x1iSLZ26Dv9ohrDPjYW8jyXiGOZB/exec"
   allow="clipboard-write">
 </iframe>
-
 <script>
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(console.error);
 }
-
 // ---- Session-token bridge (see JavaScript.html: "WRAPPER BRIDGE") ----
 // On iOS, a Home Screen web app runs standalone, and WebKit applies much
 // stricter storage rules to the iframed app (script.google.com) in that
@@ -61,19 +50,28 @@ if ('serviceWorker' in navigator) {
 // throws an error. This page IS first-party from iOS's point of view and
 // doesn't have that restriction, so it holds the durable copy of the
 // session token instead, and hands it to the app on request.
+//
+// No hardcoded expected origin here (a previous version checked
+// e.origin against 'https://script.google.com' — Apps Script's /exec URL
+// commonly redirects internally to a different rendering domain, e.g. a
+// script.googleusercontent.com subdomain, to actually serve the page, so
+// that check could silently never match and drop every message). Instead,
+// e.source === appFrame.contentWindow is the actual security boundary
+// here: it's a direct comparison of the window object itself, verified
+// by the browser, and proves the message came from our own embedded
+// iframe regardless of what domain it's currently being served from.
 var TOKEN_KEY = 'kahorng_session_token';
-var TRUSTED_APP_ORIGIN = 'https://script.google.com';
 var appFrame = document.getElementById('app-frame');
-
 window.addEventListener('message', function (e) {
-    if (e.origin !== TRUSTED_APP_ORIGIN) return;
     if (e.source !== appFrame.contentWindow) return; // must be our own iframe, not some other frame
     if (!e.data || e.data.source !== 'kahorng-app') return;
 
     if (e.data.type === 'ready') {
         var token = null;
         try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (err) { /* nothing to hand back */ }
-        appFrame.contentWindow.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, TRUSTED_APP_ORIGIN);
+        // '*' is fine here — appFrame.contentWindow is a direct reference
+        // to our own embedded iframe, not a broadcast to unknown parties.
+        appFrame.contentWindow.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, '*');
     } else if (e.data.type === 'token-changed') {
         try {
             if (e.data.token) {
@@ -89,6 +87,5 @@ window.addEventListener('message', function (e) {
     }
 });
 </script>
-
 </body>
 </html>

@@ -43,8 +43,8 @@ iframe{
 <body>
 
 <iframe
-  id="app-frame"
   src="https://script.google.com/macros/s/AKfycbwm6A-pXadfGGWR3fSYg3jNMyG9nBLhIpAbCVM5x1iSLZ26Dv9ohrDPjYW8jyXiGOZB/exec"
+  referrerpolicy="no-referrer"
   allow="clipboard-write">
 </iframe>
 
@@ -53,5 +53,6 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(console.error);
 }
 </script>
+
 </body>
 </html>

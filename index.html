@@ -36,7 +36,7 @@ iframe{
 <iframe
   id="app-frame"
   src="https://script.google.com/macros/s/AKfycbzPzKR1wdHtV6e2XBUE-XFNxAyKP0UQbvlpaBfFBRpF9Q1ecWaP3EBrfJZB3HkK0TXv/exec"
-  allow="clipboard-write">
+  allow="clipboard-write; accelerometer; gyroscope">
 </iframe>
 <script>
 if ('serviceWorker' in navigator) {
@@ -60,11 +60,9 @@ if ('serviceWorker' in navigator) {
 // of how many levels deep it turns out to be.
 var TOKEN_KEY = 'kahorng_session_token';
 var appFrame = document.getElementById('app-frame');
-
 window.addEventListener('message', function (e) {
     if (e.source === window) return; // ignore our own messages
     if (!e.data || e.data.source !== 'kahorng-app') return;
-
     if (e.data.type === 'ready') {
         var token = null;
         try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (err) { /* nothing to hand back */ }

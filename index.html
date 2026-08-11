@@ -37,21 +37,64 @@ iframe{
     display:block;
     background:#0a1120;
 }
+
+/* Manual escape hatch — only ever shown if the iframe hasn't finished
+   loading after a few seconds (see script below). Opening the same URL
+   as a normal top-level page, instead of inside this iframe, sidesteps
+   any cross-origin iframe storage restriction entirely — the most likely
+   cause if this ever hangs again, since the app now depends on
+   localStorage/sessionStorage for login. */
+#open-direct{
+    position:fixed;
+    left:50%; bottom:max(28px, env(safe-area-inset-bottom));
+    transform:translateX(-50%);
+    display:none;
+    font:600 14px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color:#0a1120;
+    background:#c9a05c;
+    border:none;
+    border-radius:999px;
+    padding:12px 22px;
+    text-decoration:none;
+    box-shadow:0 6px 20px rgba(0,0,0,0.35);
+    z-index:10;
+}
 </style>
 </head>
 
 <body>
 
 <iframe
+  id="app-frame"
   src="https://script.google.com/macros/s/AKfycbwm6A-pXadfGGWR3fSYg3jNMyG9nBLhIpAbCVM5x1iSLZ26Dv9ohrDPjYW8jyXiGOZB/exec"
   referrerpolicy="no-referrer"
   allow="clipboard-write">
 </iframe>
 
+<a id="open-direct" href="https://script.google.com/macros/s/AKfycbwm6A-pXadfGGWR3fSYg3jNMyG9nBLhIpAbCVM5x1iSLZ26Dv9ohrDPjYW8jyXiGOZB/exec" target="_top">
+  Open app directly →
+</a>
+
 <script>
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(console.error);
 }
+
+// If the iframe hasn't even fired its own load event within 8s, something
+// is wrong (network issue, stale/wrong deployment URL, or the iframe
+// context blocking something the app needs) — surface the direct-open
+// fallback rather than leaving a blank/stuck screen with no way out.
+// The iframe's own `load` firing only means the DOCUMENT arrived, not
+// that the app finished logging in — cross-origin means this page can't
+// see further than that — so the timer keeps running either way and the
+// button appears regardless, just in case.
+var frameLoaded = false;
+document.getElementById('app-frame').addEventListener('load', function () {
+    frameLoaded = true;
+});
+setTimeout(function () {
+    document.getElementById('open-direct').style.display = 'block';
+}, 8000);
 </script>
 
 </body>

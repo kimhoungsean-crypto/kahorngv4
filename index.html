@@ -11,6 +11,8 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="https://i.ibb.co/MyFQSJGQ/kahorng-icon-512-1.png">
 <link rel="apple-touch-icon" href="https://i.ibb.co/MyFQSJGQ/kahorng-icon-512-1.png">
+<script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.17.1/firebase-messaging-compat.js"></script>
 <style>
 html,
 body{
@@ -39,9 +41,86 @@ iframe{
   allow="clipboard-write; accelerometer; gyroscope; geolocation">
 </iframe>
 <script>
+var swRegistration = null;
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(console.error);
+    navigator.serviceWorker.register('./sw.js')
+        .then(function (reg) { swRegistration = reg; })
+        .catch(console.error);
 }
+
+/* ============================================================
+   Firebase Messaging (client-safe config only — no secrets here;
+   the FCM sending credential lives only in Apps Script Script
+   Properties, never in this file or the repo)
+   ============================================================ */
+var firebaseConfig = {
+  apiKey: "AIzaSyDhlY4ddtVCfe60qI0rf7Mk53bNUoAljoo",
+  authDomain: "kahorngpush.firebaseapp.com",
+  projectId: "kahorngpush",
+  storageBucket: "kahorngpush.firebasestorage.app",
+  messagingSenderId: "332993684474",
+  appId: "1:332993684474:web:fe004d1658983b5565fa43"
+};
+var VAPID_KEY = "BJH5Rc5AMjoV_72ENfyW_zCiv3VtdvUhlPQaZ-FA07phQScIdEQ8pz4xGh2zvrhV3UrotpanOMVoPqncuqxTikc";
+
+var messaging = null;
+try {
+    firebase.initializeApp(firebaseConfig);
+    messaging = firebase.messaging();
+} catch (err) {
+    console.error('Firebase Messaging init failed:', err);
+}
+
+/** Runs the actual permission prompt + FCM token fetch. Must happen here
+ *  (the wrapper's own origin), not inside the iframed app — see the
+ *  architecture notes on why. Resolves to {granted, token, error}. */
+function requestNotificationPermissionAndToken() {
+    if (!('Notification' in window) || !messaging) {
+        return Promise.resolve({ granted: false, token: null, error: 'unsupported' });
+    }
+    return Notification.requestPermission().then(function (permission) {
+        if (permission !== 'granted') return { granted: false, token: null, error: 'denied' };
+        var regPromise = swRegistration
+            ? Promise.resolve(swRegistration)
+            : navigator.serviceWorker.ready.catch(function () { return null; });
+        return regPromise.then(function (reg) {
+            return messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: reg || undefined })
+                .then(function (token) {
+                    return token ? { granted: true, token: token, error: null } : { granted: false, token: null, error: 'no-token' };
+                })
+                .catch(function (err) {
+                    return { granted: false, token: null, error: String((err && err.message) || err) };
+                });
+        });
+    }).catch(function (err) {
+        return { granted: false, token: null, error: String((err && err.message) || err) };
+    });
+}
+
+// Foreground push (a Kahorng tab is open and focused): FCM does NOT
+// auto-display these, unlike backgrounded/closed-app pushes handled by
+// sw.js's onBackgroundMessage — so this is the foreground equivalent,
+// same title/body/data shape, same click behavior (forward into the app).
+if (messaging) {
+    messaging.onMessage(function (payload) {
+        if (Notification.permission !== 'granted') return;
+        var n = payload.notification || {};
+        var data = payload.data || {};
+        try {
+            var notif = new Notification(n.title || 'Kahorng', {
+                body: n.body || '',
+                icon: 'https://i.ibb.co/MyFQSJGQ/kahorng-icon-512-1.png',
+                data: data
+            });
+            notif.onclick = function () {
+                window.focus();
+                forwardNavigateToApp(data.view);
+                notif.close();
+            };
+        } catch (err) { /* best-effort — a foreground push that fails to display is a minor miss, not a crash */ }
+    });
+}
+
 // ---- Session-token bridge (see JavaScript.html: "WRAPPER BRIDGE") ----
 // On iOS, a Home Screen web app runs standalone, and WebKit applies much
 // stricter storage rules to the iframed app (script.google.com) in that
@@ -60,13 +139,49 @@ if ('serviceWorker' in navigator) {
 // of how many levels deep it turns out to be.
 var TOKEN_KEY = 'kahorng_session_token';
 var appFrame = document.getElementById('app-frame');
+
+// The app's own source/origin, captured the moment it first says "ready"
+// — reused afterwards to PROACTIVELY message it (e.g. a notification tap
+// arriving well after boot), not just to reply to something it sent.
+var appSource = null;
+var appOrigin = null;
+// If a notification tap needs to navigate the app before it has said
+// "ready" yet (e.g. this wrapper window was just opened), the view is
+// queued here and flushed the moment appSource becomes available.
+var pendingNavigateView = null;
+
+function forwardNavigateToApp(view) {
+    if (!view) return;
+    if (appSource && appOrigin) {
+        try { appSource.postMessage({ source: 'kahorng-wrapper', type: 'navigate', view: view }, appOrigin); } catch (err) { /* app frame gone — nothing to do */ }
+    } else {
+        pendingNavigateView = view;
+    }
+}
+
+// Cold start via a notification tap: sw.js opens this page at
+// './#<view>' when no Kahorng window was already open (see sw.js's
+// notificationclick). Pick that up here as a fallback alongside the
+// postMessage relay below, in case the SW's client message races ahead
+// of this script's listeners being attached.
+if (location.hash) {
+    pendingNavigateView = location.hash.slice(1);
+}
+
 window.addEventListener('message', function (e) {
     if (e.source === window) return; // ignore our own messages
     if (!e.data || e.data.source !== 'kahorng-app') return;
     if (e.data.type === 'ready') {
+        appSource = e.source;
+        appOrigin = e.origin;
         var token = null;
         try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (err) { /* nothing to hand back */ }
         e.source.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, '*');
+        if (pendingNavigateView) {
+            var view = pendingNavigateView;
+            pendingNavigateView = null;
+            forwardNavigateToApp(view);
+        }
     } else if (e.data.type === 'token-changed') {
         try {
             if (e.data.token) {
@@ -79,8 +194,25 @@ window.addEventListener('message', function (e) {
                 sessionStorage.removeItem(TOKEN_KEY);
             }
         } catch (err) { /* first-party storage should work here, but never let this crash the wrapper */ }
+    } else if (e.data.type === 'request-notification-permission') {
+        var replyTo = e.source, replyOrigin = e.origin;
+        requestNotificationPermissionAndToken().then(function (result) {
+            try {
+                replyTo.postMessage({ source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, error: result.error }, replyOrigin);
+            } catch (err) { /* app frame gone — nothing to reply to */ }
+        });
     }
 });
+
+// Relay from the service worker (a notification tap while this wrapper
+// window already existed) into the app frame, via the same forwarder
+// used for the cold-start hash case above.
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', function (e) {
+        if (!e.data || e.data.source !== 'kahorng-sw' || e.data.type !== 'navigate') return;
+        forwardNavigateToApp(e.data.view);
+    });
+}
 </script>
 </body>
 </html>

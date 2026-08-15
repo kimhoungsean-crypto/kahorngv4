@@ -32,6 +32,34 @@ iframe{
     display:block;
     background:#0a1120;
 }
+/* Real, top-level, directly-clickable element — required so
+   Notification.requestPermission() below is called synchronously inside
+   a genuine user gesture. A button relayed via postMessage from the
+   iframe does NOT count as a user gesture in this frame (this is why an
+   earlier version silently failed on iOS specifically), so this can't be
+   moved into the app's own UI — it has to be a real element the person
+   taps right here. Hidden once permission is granted; also hidden if
+   Notification isn't supported at all. */
+#notif-fab{
+    position:fixed;
+    right:16px;
+    bottom:max(16px, env(safe-area-inset-bottom));
+    width:52px;
+    height:52px;
+    border-radius:50%;
+    border:none;
+    background:#e8c789;
+    color:#12233b;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    box-shadow:0 4px 14px rgba(0,0,0,0.35);
+    z-index:10;
+    cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+#notif-fab:active{ transform:scale(0.94); }
+#notif-fab[hidden]{ display:none; }
 </style>
 </head>
 <body>
@@ -40,6 +68,9 @@ iframe{
   src="https://script.google.com/macros/s/AKfycbwc3mG8pAowHtUseNYMzTPRWmEPq_NA0YA5GRzz8oP2TCNW6bj-NJKRnB3Bap4Qo2Q/exec"
   allow="clipboard-write; accelerometer; gyroscope; geolocation">
 </iframe>
+<button id="notif-fab" type="button" aria-label="Enable notifications" hidden>
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M9.5 20a2.5 2.5 0 0 0 5 0"/></svg>
+</button>
 <script>
 var swRegistration = null;
 if ('serviceWorker' in navigator) {
@@ -97,6 +128,31 @@ function requestNotificationPermissionAndToken() {
     });
 }
 
+// The bell button itself — a real element in this top-level page, so the
+// click below is a genuine user gesture and Notification.requestPermission()
+// (called synchronously inside it, no intervening await) actually completes
+// a real OS-level push registration on every platform, iOS included.
+var notifFab = document.getElementById('notif-fab');
+if (notifFab && 'Notification' in window && messaging) {
+    if (Notification.permission !== 'granted') notifFab.hidden = false;
+    notifFab.addEventListener('click', function () {
+        notifFab.disabled = true;
+        requestNotificationPermissionAndToken().then(function (result) {
+            notifFab.disabled = false;
+            if (result.granted && result.token) notifFab.hidden = true;
+            // Sent proactively (not a reply — nothing in the iframe asked for
+            // this), to whichever app frame we know about; queued the same
+            // way a pending navigate is if the app hasn't said "ready" yet.
+            var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, error: result.error };
+            if (appSource && appOrigin) {
+                try { appSource.postMessage(payload, appOrigin); } catch (err) { /* app frame gone */ }
+            } else {
+                pendingNotificationResult = payload;
+            }
+        });
+    });
+}
+
 // Foreground push (a Kahorng tab is open and focused): FCM does NOT
 // auto-display these, unlike backgrounded/closed-app pushes handled by
 // sw.js's onBackgroundMessage — so this is the foreground equivalent,
@@ -149,6 +205,9 @@ var appOrigin = null;
 // "ready" yet (e.g. this wrapper window was just opened), the view is
 // queued here and flushed the moment appSource becomes available.
 var pendingNavigateView = null;
+// Same idea, for a bell-button tap that resolves before the app frame has
+// said "ready" yet (e.g. the button was tapped during initial load).
+var pendingNotificationResult = null;
 
 function forwardNavigateToApp(view) {
     if (!view) return;
@@ -182,6 +241,11 @@ window.addEventListener('message', function (e) {
             pendingNavigateView = null;
             forwardNavigateToApp(view);
         }
+        if (pendingNotificationResult) {
+            var result = pendingNotificationResult;
+            pendingNotificationResult = null;
+            try { e.source.postMessage(result, e.origin); } catch (err) { /* app frame gone */ }
+        }
     } else if (e.data.type === 'token-changed') {
         try {
             if (e.data.token) {
@@ -194,13 +258,6 @@ window.addEventListener('message', function (e) {
                 sessionStorage.removeItem(TOKEN_KEY);
             }
         } catch (err) { /* first-party storage should work here, but never let this crash the wrapper */ }
-    } else if (e.data.type === 'request-notification-permission') {
-        var replyTo = e.source, replyOrigin = e.origin;
-        requestNotificationPermissionAndToken().then(function (result) {
-            try {
-                replyTo.postMessage({ source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, error: result.error }, replyOrigin);
-            } catch (err) { /* app frame gone — nothing to reply to */ }
-        });
     }
 });
 

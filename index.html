@@ -128,6 +128,25 @@ function requestNotificationPermissionAndToken() {
     });
 }
 
+// ---- Device-removal opt-out (Notification Pass 3) ----
+// Local-only marker: "the person explicitly removed notifications on
+// THIS browser, don't silently bring it back." Set only after confirming
+// (via the app, which can reach the backend) that THIS browser's own
+// token is no longer an active registered device — see the
+// 'devices-changed'/'token-status-result' handling below. Cleared only by
+// an explicit bell tap (a real, deliberate re-enable action), never by
+// the silent refresh itself.
+var NOTIF_OPTOUT_KEY = 'kahorng_notif_optout';
+function isNotifOptedOut() {
+    try { return localStorage.getItem(NOTIF_OPTOUT_KEY) === '1'; } catch (err) { return false; }
+}
+function setNotifOptedOut() {
+    try { localStorage.setItem(NOTIF_OPTOUT_KEY, '1'); } catch (err) { /* best-effort */ }
+}
+function clearNotifOptedOut() {
+    try { localStorage.removeItem(NOTIF_OPTOUT_KEY); } catch (err) { /* best-effort */ }
+}
+
 // The bell button itself — a real element in this top-level page, so the
 // click below is a genuine user gesture and Notification.requestPermission()
 // (called synchronously inside it, no intervening await) actually completes
@@ -139,7 +158,13 @@ if (notifFab && 'Notification' in window && messaging) {
         notifFab.disabled = true;
         requestNotificationPermissionAndToken().then(function (result) {
             notifFab.disabled = false;
-            if (result.granted && result.token) notifFab.hidden = true;
+            if (result.granted && result.token) {
+                notifFab.hidden = true;
+                // A deliberate tap succeeding IS the explicit re-enable
+                // action — always clears any prior opt-out, regardless of
+                // whether one was actually set (harmless no-op if not).
+                clearNotifOptedOut();
+            }
             // Sent proactively (not a reply — nothing in the iframe asked for
             // this), to whichever app frame we know about; queued the same
             // way a pending navigate is if the app hasn't said "ready" yet.
@@ -170,7 +195,7 @@ if (messaging) {
             });
             notif.onclick = function () {
                 window.focus();
-                forwardNavigateToApp(data.view);
+                forwardNavigateToApp(data.view, data.entityId);
                 notif.close();
             };
         } catch (err) { /* best-effort — a foreground push that fails to display is a minor miss, not a crash */ }
@@ -205,26 +230,52 @@ var appOrigin = null;
 // "ready" yet (e.g. this wrapper window was just opened), the view is
 // queued here and flushed the moment appSource becomes available.
 var pendingNavigateView = null;
+// Same idea, for the entityId that came along with that same tap (Pass 3
+// deep-linking) — always flushed together with pendingNavigateView, never
+// independently.
+var pendingNavigateEntityId = null;
 // Same idea, for a bell-button tap that resolves before the app frame has
 // said "ready" yet (e.g. the button was tapped during initial load).
 var pendingNotificationResult = null;
 
-function forwardNavigateToApp(view) {
+/** Normalizes an entityId that may have crossed through FCM's data
+ *  payload (string-only — see buildFcmRequests' own note server-side) or
+ *  a URL hash: treats a missing value, or the literal strings 'null'/
+ *  'undefined' (what a stringified null/undefined would look like),
+ *  as "no entity" rather than a real id to look up. */
+function normalizeEntityId(entityId) {
+    if (!entityId || entityId === 'null' || entityId === 'undefined') return null;
+    return entityId;
+}
+
+function forwardNavigateToApp(view, entityId) {
     if (!view) return;
+    entityId = normalizeEntityId(entityId);
+    var payload = { source: 'kahorng-wrapper', type: 'navigate', view: view };
+    if (entityId) payload.entityId = entityId;
     if (appSource && appOrigin) {
-        try { appSource.postMessage({ source: 'kahorng-wrapper', type: 'navigate', view: view }, appOrigin); } catch (err) { /* app frame gone — nothing to do */ }
+        try { appSource.postMessage(payload, appOrigin); } catch (err) { /* app frame gone — nothing to do */ }
     } else {
         pendingNavigateView = view;
+        pendingNavigateEntityId = entityId;
     }
 }
 
 // Cold start via a notification tap: sw.js opens this page at
-// './#<view>' when no Kahorng window was already open (see sw.js's
-// notificationclick). Pick that up here as a fallback alongside the
-// postMessage relay below, in case the SW's client message races ahead
-// of this script's listeners being attached.
+// './#<view>' (optionally '?e=<entityId>' appended — see sw.js) when no
+// Kahorng window was already open. Pick that up here as a fallback
+// alongside the postMessage relay below, in case the SW's client message
+// races ahead of this script's listeners being attached.
 if (location.hash) {
-    pendingNavigateView = location.hash.slice(1);
+    var coldStartHash = location.hash.slice(1);
+    var coldStartEntityIdx = coldStartHash.indexOf('?e=');
+    if (coldStartEntityIdx !== -1) {
+        pendingNavigateView = coldStartHash.slice(0, coldStartEntityIdx);
+        try { pendingNavigateEntityId = normalizeEntityId(decodeURIComponent(coldStartHash.slice(coldStartEntityIdx + 3))); }
+        catch (err) { pendingNavigateEntityId = null; }
+    } else {
+        pendingNavigateView = coldStartHash;
+    }
 }
 
 window.addEventListener('message', function (e) {
@@ -235,11 +286,13 @@ window.addEventListener('message', function (e) {
         appOrigin = e.origin;
         var token = null;
         try { token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY); } catch (err) { /* nothing to hand back */ }
-        e.source.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, '*');
+        e.source.postMessage({ source: 'kahorng-wrapper', type: 'token', token: token }, appOrigin);
         if (pendingNavigateView) {
             var view = pendingNavigateView;
+            var entityId = pendingNavigateEntityId;
             pendingNavigateView = null;
-            forwardNavigateToApp(view);
+            pendingNavigateEntityId = null;
+            forwardNavigateToApp(view, entityId);
         }
         if (pendingNotificationResult) {
             var result = pendingNotificationResult;
@@ -258,6 +311,31 @@ window.addEventListener('message', function (e) {
                 sessionStorage.removeItem(TOKEN_KEY);
             }
         } catch (err) { /* first-party storage should work here, but never let this crash the wrapper */ }
+    } else if (e.data.type === 'devices-changed') {
+        // The app just removed a device from Settings (any device, not
+        // necessarily this one — the app has no way to know which). Only
+        // THIS browser can tell whether it was the one removed: silently
+        // re-fetch this browser's own current token (no prompt — same
+        // no-UI-when-already-decided guarantee the silent refresh below
+        // relies on) and ask the app to check its live status.
+        if (Notification.permission === 'granted' && messaging) {
+            var regPromise2 = swRegistration ? Promise.resolve(swRegistration) : navigator.serviceWorker.ready.catch(function () { return null; });
+            regPromise2.then(function (reg) {
+                return messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: reg || undefined });
+            }).then(function (token) {
+                if (!token) return;
+                var checkPayload = { source: 'kahorng-wrapper', type: 'check-token-status', token: token };
+                if (appSource && appOrigin) {
+                    try { appSource.postMessage(checkPayload, appOrigin); } catch (err) { /* app frame gone */ }
+                }
+            }).catch(function () { /* best-effort — a failed check just leaves the opt-out flag as it was */ });
+        }
+    } else if (e.data.type === 'token-status-result') {
+        // Reply to the check above — the ONLY place the opt-out flag is
+        // ever set, and it's always based on this browser's own token,
+        // never inferred from which device ID was removed.
+        if (e.data.active === false) setNotifOptedOut();
+        else if (e.data.active === true) clearNotifOptedOut(); // defensive: correct a stale flag if this device is in fact still active
     }
 });
 
@@ -267,7 +345,7 @@ window.addEventListener('message', function (e) {
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', function (e) {
         if (!e.data || e.data.source !== 'kahorng-sw' || e.data.type !== 'navigate') return;
-        forwardNavigateToApp(e.data.view);
+        forwardNavigateToApp(e.data.view, e.data.entityId);
     });
 }
 
@@ -283,12 +361,18 @@ if ('serviceWorker' in navigator) {
 // lastSeenAt going stale forever after a single bell tap, and what
 // re-obtains a rotated FCM token before it silently starts failing.
 //
+// Skipped entirely when isNotifOptedOut() (Notification Pass 3) — the
+// person explicitly removed notifications on this exact device, and this
+// refresh existing at all is what silently undid that before this guard
+// was added. Only an explicit bell tap (which always clears the flag —
+// see its click handler above) can bring this device back.
+//
 // Marked `silent: true` so the app knows this is a routine background
 // check, not a user-initiated action — it registers quietly on success
 // and shows no error toast on failure. On failure, the bell button is
 // revealed so the person has a real, working manual retry — the exact
 // same tap-to-enable path already used for a first-time grant.
-if (notifFab && 'Notification' in window && messaging && Notification.permission === 'granted') {
+if (notifFab && 'Notification' in window && messaging && Notification.permission === 'granted' && !isNotifOptedOut()) {
     requestNotificationPermissionAndToken().then(function (result) {
         var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, error: result.error, silent: true };
         if (appSource && appOrigin) {

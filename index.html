@@ -270,6 +270,37 @@ if ('serviceWorker' in navigator) {
         forwardNavigateToApp(e.data.view);
     });
 }
+
+// ---- Silent token refresh (Notification Pass 1, reliability) ----
+// If this browser already granted permission in an earlier session, keep
+// the registered token/lastSeenAt fresh in the background — no prompt,
+// no user gesture needed. This is safe because Notification.
+// requestPermission() resolves immediately with no UI shown when
+// permission is already 'granted' (per spec) — so
+// requestNotificationPermissionAndToken() (the exact same function the
+// bell button calls) can be called here unconditionally with no risk of
+// surprising the person with a permission dialog. This is what fixes
+// lastSeenAt going stale forever after a single bell tap, and what
+// re-obtains a rotated FCM token before it silently starts failing.
+//
+// Marked `silent: true` so the app knows this is a routine background
+// check, not a user-initiated action — it registers quietly on success
+// and shows no error toast on failure. On failure, the bell button is
+// revealed so the person has a real, working manual retry — the exact
+// same tap-to-enable path already used for a first-time grant.
+if (notifFab && 'Notification' in window && messaging && Notification.permission === 'granted') {
+    requestNotificationPermissionAndToken().then(function (result) {
+        var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, error: result.error, silent: true };
+        if (appSource && appOrigin) {
+            try { appSource.postMessage(payload, appOrigin); } catch (err) { /* app frame gone */ }
+        } else {
+            pendingNotificationResult = payload;
+        }
+        if (!result.granted || !result.token) {
+            notifFab.hidden = false;
+        }
+    });
+}
 </script>
 </body>
 </html>

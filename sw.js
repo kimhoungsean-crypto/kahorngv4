@@ -49,25 +49,33 @@ messaging.onBackgroundMessage((payload) => {
 });
 
 // A tap on the notification: focus an already-open Kahorng window and
-// hand it the destination view, or open a fresh one at that view's hash
-// if none is open. Two delivery paths for the view on purpose — a
-// postMessage to an existing client, and a URL hash on a freshly opened
-// one — since a brand-new window's top-level script may not have its
-// message listener attached in time to catch a postMessage sent the
-// instant it opens.
+// hand it the destination view (+ entityId, if present — Notification
+// Pass 3 deep-linking), or open a fresh one at that view's hash if none
+// is open. Two delivery paths for the view on purpose — a postMessage to
+// an existing client, and a URL hash on a freshly opened one — since a
+// brand-new window's top-level script may not have its message listener
+// attached in time to catch a postMessage sent the instant it opens.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const view = (event.notification.data && event.notification.data.view) || '';
+  // FCM data payloads are string-only server-side (see buildFcmRequests'
+  // note in NotificationService.gs) — a combined multi-bill notification
+  // deliberately omits entityId entirely rather than sending it as the
+  // literal string "null", but this still defends against any stray/old
+  // value shaped like one.
+  let entityId = (event.notification.data && event.notification.data.entityId) || '';
+  if (!entityId || entityId === 'null' || entityId === 'undefined') entityId = '';
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       const existing = list.find((c) => c.url.indexOf(self.registration.scope) === 0);
       if (existing) {
         existing.focus();
-        existing.postMessage({ source: 'kahorng-sw', type: 'navigate', view: view });
+        existing.postMessage({ source: 'kahorng-sw', type: 'navigate', view: view, entityId: entityId || null });
         return;
       }
-      return self.clients.openWindow(view ? ('./#' + view) : './');
+      const hash = view ? (view + (entityId ? ('?e=' + encodeURIComponent(entityId)) : '')) : '';
+      return self.clients.openWindow(hash ? ('./#' + hash) : './');
     })
   );
 });

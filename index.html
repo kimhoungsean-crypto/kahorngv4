@@ -104,27 +104,37 @@ try {
 
 /** Runs the actual permission prompt + FCM token fetch. Must happen here
  *  (the wrapper's own origin), not inside the iframed app — see the
- *  architecture notes on why. Resolves to {granted, token, error}. */
+ *  architecture notes on why. Resolves to {granted, token, previousToken,
+ *  error}. `previousToken` is the last token THIS browser successfully
+ *  registered, tracked in localStorage — see api_registerDevice's own
+ *  comment for why this is what prevents a duplicate delivery when FCM
+ *  rotates the token: it's what lets the server deactivate the old row
+ *  precisely, based on this exact browser's own history, never a guess. */
+var FCM_TOKEN_KEY = 'kahorng_fcm_token';
 function requestNotificationPermissionAndToken() {
     if (!('Notification' in window) || !messaging) {
-        return Promise.resolve({ granted: false, token: null, error: 'unsupported' });
+        return Promise.resolve({ granted: false, token: null, previousToken: null, error: 'unsupported' });
     }
+    var previousToken = null;
+    try { previousToken = localStorage.getItem(FCM_TOKEN_KEY); } catch (err) { /* best-effort */ }
     return Notification.requestPermission().then(function (permission) {
-        if (permission !== 'granted') return { granted: false, token: null, error: 'denied' };
+        if (permission !== 'granted') return { granted: false, token: null, previousToken: previousToken, error: 'denied' };
         var regPromise = swRegistration
             ? Promise.resolve(swRegistration)
             : navigator.serviceWorker.ready.catch(function () { return null; });
         return regPromise.then(function (reg) {
             return messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: reg || undefined })
                 .then(function (token) {
-                    return token ? { granted: true, token: token, error: null } : { granted: false, token: null, error: 'no-token' };
+                    if (!token) return { granted: false, token: null, previousToken: previousToken, error: 'no-token' };
+                    try { localStorage.setItem(FCM_TOKEN_KEY, token); } catch (err) { /* best-effort — worst case a future rotation isn't caught */ }
+                    return { granted: true, token: token, previousToken: previousToken, error: null };
                 })
                 .catch(function (err) {
-                    return { granted: false, token: null, error: String((err && err.message) || err) };
+                    return { granted: false, token: null, previousToken: previousToken, error: String((err && err.message) || err) };
                 });
         });
     }).catch(function (err) {
-        return { granted: false, token: null, error: String((err && err.message) || err) };
+        return { granted: false, token: null, previousToken: previousToken, error: String((err && err.message) || err) };
     });
 }
 
@@ -153,7 +163,14 @@ function clearNotifOptedOut() {
 // a real OS-level push registration on every platform, iOS included.
 var notifFab = document.getElementById('notif-fab');
 if (notifFab && 'Notification' in window && messaging) {
-    if (Notification.permission !== 'granted') notifFab.hidden = false;
+    // Only reveal for 'default' (never decided) — NOT '!== granted', which
+    // used to also catch 'denied' and show the bell forever on every load
+    // even though tapping it can never do anything once the browser has
+    // permanently refused: Notification.requestPermission() resolves
+    // immediately back to 'denied' with no prompt, per spec. The silent
+    // refresh below is unaffected by this — it's already gated on
+    // 'granted' and so can never run (or reveal the bell) while denied.
+    if (Notification.permission === 'default') notifFab.hidden = false;
     notifFab.addEventListener('click', function () {
         notifFab.disabled = true;
         requestNotificationPermissionAndToken().then(function (result) {
@@ -168,7 +185,7 @@ if (notifFab && 'Notification' in window && messaging) {
             // Sent proactively (not a reply — nothing in the iframe asked for
             // this), to whichever app frame we know about; queued the same
             // way a pending navigate is if the app hasn't said "ready" yet.
-            var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, error: result.error };
+            var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, previousToken: result.previousToken, error: result.error };
             if (appSource && appOrigin) {
                 try { appSource.postMessage(payload, appOrigin); } catch (err) { /* app frame gone */ }
             } else {
@@ -374,7 +391,7 @@ if ('serviceWorker' in navigator) {
 // same tap-to-enable path already used for a first-time grant.
 if (notifFab && 'Notification' in window && messaging && Notification.permission === 'granted' && !isNotifOptedOut()) {
     requestNotificationPermissionAndToken().then(function (result) {
-        var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, error: result.error, silent: true };
+        var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, previousToken: result.previousToken, error: result.error, silent: true };
         if (appSource && appOrigin) {
             try { appSource.postMessage(payload, appOrigin); } catch (err) { /* app frame gone */ }
         } else {

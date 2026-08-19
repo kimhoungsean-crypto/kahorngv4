@@ -199,14 +199,16 @@ if (notifFab && 'Notification' in window && messaging) {
 // auto-display these, unlike backgrounded/closed-app pushes handled by
 // sw.js's onBackgroundMessage — so this is the foreground equivalent,
 // same title/body/data shape, same click behavior (forward into the app).
+// Reads title/body from `data`, not a top-level `notification` field — see
+// buildFcmRequests' own comment (NotificationService.gs) for why the
+// outgoing message is data-only.
 if (messaging) {
     messaging.onMessage(function (payload) {
         if (Notification.permission !== 'granted') return;
-        var n = payload.notification || {};
         var data = payload.data || {};
         try {
-            var notif = new Notification(n.title || 'Kahorng', {
-                body: n.body || '',
+            var notif = new Notification(data.title || 'Kahorng', {
+                body: data.body || '',
                 icon: 'https://i.ibb.co/MyFQSJGQ/kahorng-icon-512-1.png',
                 data: data
             });

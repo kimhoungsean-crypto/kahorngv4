@@ -38,28 +38,43 @@ iframe{
    iframe does NOT count as a user gesture in this frame (this is why an
    earlier version silently failed on iOS specifically), so this can't be
    moved into the app's own UI — it has to be a real element the person
-   taps right here. Hidden once permission is granted; also hidden if
-   Notification isn't supported at all. */
+   taps right here. Hidden once permission is granted or denied; also
+   hidden if Notification isn't supported at all.
+
+   Smaller and softer than the original design (44px, muted gold, lighter
+   shadow) — still a real, clearly-tappable button, just reading as a
+   secondary utility affordance rather than a bold primary action, since
+   for most people most of the time it has nothing to do (already
+   decided). Sits in the SAME fixed bottom-right corner on wider
+   viewports, but lifts clear of the app's own mobile bottom tab bar
+   below 880px (matching that bar's own breakpoint in Stylesheet.html) —
+   this button is a separate top-level element outside the app's iframe,
+   so it has no way to know the tab bar exists short of mirroring its
+   breakpoint and reserved height (80px + safe-area-inset-bottom) here. */
 #notif-fab{
     position:fixed;
-    right:16px;
-    bottom:max(16px, env(safe-area-inset-bottom));
-    width:52px;
-    height:52px;
+    right:14px;
+    bottom:max(14px, env(safe-area-inset-bottom));
+    width:44px;
+    height:44px;
     border-radius:50%;
-    border:none;
-    background:#e8c789;
-    color:#12233b;
+    border:1px solid rgba(232,199,137,0.35);
+    background:rgba(18,35,59,0.82);
+    color:#e8c789;
     display:flex;
     align-items:center;
     justify-content:center;
-    box-shadow:0 4px 14px rgba(0,0,0,0.35);
+    box-shadow:0 3px 10px rgba(0,0,0,0.28);
     z-index:10;
     cursor:pointer;
     -webkit-tap-highlight-color:transparent;
+    transition:bottom .15s ease;
 }
 #notif-fab:active{ transform:scale(0.94); }
 #notif-fab[hidden]{ display:none; }
+@media (max-width: 880px) {
+    #notif-fab{ bottom:calc(80px + env(safe-area-inset-bottom, 0px) + 12px + 48px); }
+}
 </style>
 </head>
 <body>
@@ -68,8 +83,8 @@ iframe{
   src="https://script.google.com/macros/s/AKfycbwc3mG8pAowHtUseNYMzTPRWmEPq_NA0YA5GRzz8oP2TCNW6bj-NJKRnB3Bap4Qo2Q/exec"
   allow="clipboard-write; accelerometer; gyroscope; geolocation; publickey-credentials-get; publickey-credentials-create">
 </iframe>
-<button id="notif-fab" type="button" aria-label="Enable notifications" hidden>
-  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M9.5 20a2.5 2.5 0 0 0 5 0"/></svg>
+<button id="notif-fab" type="button" aria-label="Enable notifications" title="Enable notifications" hidden>
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M9.5 20a2.5 2.5 0 0 0 5 0"/></svg>
 </button>
 <script>
 var swRegistration = null;

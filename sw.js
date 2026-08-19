@@ -34,14 +34,20 @@ const ICON_URL = "https://i.ibb.co/MyFQSJGQ/kahorng-icon-512-1.png";
 
 // Fires when a push arrives while no Kahorng tab/window is focused. Builds
 // the notification ourselves (rather than relying on FCM's implicit
-// display of the `notification` payload) so we can attach `data` for
-// notificationclick to read below — the implicit path shows the same
-// text but drops the routing info a tap needs.
+// display of a `notification` payload) so we can attach `data` for
+// notificationclick to read below.
+//
+// The outgoing message is data-only (see buildFcmRequests' own comment,
+// NotificationService.gs) — title/body travel inside `data`, not a
+// top-level `notification` field. A message that carried one would get
+// auto-displayed by the browser itself, in addition to this handler
+// manually calling showNotification() below, producing two identical
+// banners for one push. Reading them from `data` instead is what makes
+// this the ONLY thing that ever displays anything for a backgrounded push.
 messaging.onBackgroundMessage((payload) => {
-  const n = payload.notification || {};
   const data = payload.data || {};
-  self.registration.showNotification(n.title || 'Kahorng', {
-    body: n.body || '',
+  self.registration.showNotification(data.title || 'Kahorng', {
+    body: data.body || '',
     icon: ICON_URL,
     badge: ICON_URL,
     data: data

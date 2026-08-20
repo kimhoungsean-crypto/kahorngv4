@@ -87,11 +87,33 @@ iframe{
   <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M9.5 20a2.5 2.5 0 0 0 5 0"/></svg>
 </button>
 <script>
+// [NOTIF-DIAG] Temporary diagnostic logging for the "bell reappears every
+// open" investigation. Every line is prefixed [NOTIF-DIAG] and includes a
+// timestamp so the wrapper's and the app's logs can be correlated in
+// DevTools. Pure console.log/console.error additions only — no existing
+// condition, value, timing, or control flow below is touched. Safe/easy to
+// find and remove: search this file and JavaScript.html for "[NOTIF-DIAG]".
+function notifDiagLog() {
+    var args = Array.prototype.slice.call(arguments);
+    console.log.apply(console, ['[NOTIF-DIAG][wrapper][' + new Date().toISOString() + ']'].concat(args));
+}
+notifDiagLog('wrapper script start. Notification.permission =', (typeof Notification !== 'undefined' ? Notification.permission : '(Notification API unavailable)'));
+try { notifDiagLog('kahorng_notif_optout in localStorage =', localStorage.getItem('kahorng_notif_optout')); } catch (diagErr) { notifDiagLog('kahorng_notif_optout read failed:', String(diagErr)); }
+try { notifDiagLog('kahorng_fcm_token present locally =', !!localStorage.getItem('kahorng_fcm_token')); } catch (diagErr) { notifDiagLog('kahorng_fcm_token read failed:', String(diagErr)); }
+
 var swRegistration = null;
 if ('serviceWorker' in navigator) {
+    notifDiagLog('registering service worker...');
     navigator.serviceWorker.register('./sw.js')
-        .then(function (reg) { swRegistration = reg; })
-        .catch(console.error);
+        .then(function (reg) { swRegistration = reg; notifDiagLog('service worker registered OK. scope =', reg.scope, 'active =', !!reg.active); })
+        .catch(function (err) { notifDiagLog('service worker registration FAILED:', String(err)); console.error(err); });
+    navigator.serviceWorker.ready.then(function (reg) {
+        notifDiagLog('navigator.serviceWorker.ready resolved. active =', !!(reg && reg.active));
+    }).catch(function (err) {
+        notifDiagLog('navigator.serviceWorker.ready REJECTED:', String(err));
+    });
+} else {
+    notifDiagLog('serviceWorker not supported in this browser/context.');
 }
 
 /* ============================================================
@@ -127,28 +149,36 @@ try {
  *  precisely, based on this exact browser's own history, never a guess. */
 var FCM_TOKEN_KEY = 'kahorng_fcm_token';
 function requestNotificationPermissionAndToken() {
+    notifDiagLog('requestNotificationPermissionAndToken() called. Notification.permission =', (typeof Notification !== 'undefined' ? Notification.permission : '(n/a)'));
     if (!('Notification' in window) || !messaging) {
+        notifDiagLog('bailing out early: Notification API or messaging unavailable.');
         return Promise.resolve({ granted: false, token: null, previousToken: null, error: 'unsupported' });
     }
     var previousToken = null;
     try { previousToken = localStorage.getItem(FCM_TOKEN_KEY); } catch (err) { /* best-effort */ }
+    notifDiagLog('previousToken found locally =', !!previousToken);
     return Notification.requestPermission().then(function (permission) {
+        notifDiagLog('Notification.requestPermission() resolved:', permission);
         if (permission !== 'granted') return { granted: false, token: null, previousToken: previousToken, error: 'denied' };
         var regPromise = swRegistration
             ? Promise.resolve(swRegistration)
             : navigator.serviceWorker.ready.catch(function () { return null; });
         return regPromise.then(function (reg) {
+            notifDiagLog('service worker registration for getToken() =', reg ? ('present, active=' + !!reg.active) : 'MISSING (undefined passed to getToken)');
             return messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: reg || undefined })
                 .then(function (token) {
-                    if (!token) return { granted: false, token: null, previousToken: previousToken, error: 'no-token' };
+                    if (!token) { notifDiagLog('messaging.getToken() resolved with an EMPTY token.'); return { granted: false, token: null, previousToken: previousToken, error: 'no-token' }; }
+                    notifDiagLog('messaging.getToken() SUCCEEDED. token changed from previous =', (previousToken !== token));
                     try { localStorage.setItem(FCM_TOKEN_KEY, token); } catch (err) { /* best-effort — worst case a future rotation isn't caught */ }
                     return { granted: true, token: token, previousToken: previousToken, error: null };
                 })
                 .catch(function (err) {
+                    notifDiagLog('messaging.getToken() FAILED:', String((err && err.message) || err));
                     return { granted: false, token: null, previousToken: previousToken, error: String((err && err.message) || err) };
                 });
         });
     }).catch(function (err) {
+        notifDiagLog('requestNotificationPermissionAndToken() outer chain FAILED:', String((err && err.message) || err));
         return { granted: false, token: null, previousToken: previousToken, error: String((err && err.message) || err) };
     });
 }
@@ -185,8 +215,10 @@ if (notifFab && 'Notification' in window && messaging) {
     // immediately back to 'denied' with no prompt, per spec. The silent
     // refresh below is unaffected by this — it's already gated on
     // 'granted' and so can never run (or reveal the bell) while denied.
-    if (Notification.permission === 'default') notifFab.hidden = false;
+    if (Notification.permission === 'default') { notifDiagLog('bell shown on startup: Notification.permission is "default" (never decided).'); notifFab.hidden = false; }
+    else { notifDiagLog('bell NOT shown on startup by this check (permission =', Notification.permission, ') — may still be revealed later by the silent refresh below if that fails.'); }
     notifFab.addEventListener('click', function () {
+        notifDiagLog('bell tapped by user.');
         notifFab.disabled = true;
         requestNotificationPermissionAndToken().then(function (result) {
             notifFab.disabled = false;
@@ -201,9 +233,12 @@ if (notifFab && 'Notification' in window && messaging) {
             // this), to whichever app frame we know about; queued the same
             // way a pending navigate is if the app hasn't said "ready" yet.
             var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, previousToken: result.previousToken, error: result.error };
+            notifDiagLog('bell-tap result: granted =', result.granted, 'token =', !!result.token, 'error =', result.error);
             if (appSource && appOrigin) {
-                try { appSource.postMessage(payload, appOrigin); } catch (err) { /* app frame gone */ }
+                notifDiagLog('sending notification-permission-result to iframe now (appSource already known).');
+                try { appSource.postMessage(payload, appOrigin); } catch (err) { notifDiagLog('postMessage to iframe FAILED:', String(err)); }
             } else {
+                notifDiagLog('appSource not known yet — queuing result as pendingNotificationResult until the app says "ready".');
                 pendingNotificationResult = payload;
             }
         });
@@ -406,18 +441,35 @@ if ('serviceWorker' in navigator) {
 // and shows no error toast on failure. On failure, the bell button is
 // revealed so the person has a real, working manual retry — the exact
 // same tap-to-enable path already used for a first-time grant.
+// [NOTIF-DIAG] Pure read-only re-evaluation of the same sub-conditions the
+// real gate below checks, purely for logging which one(s) are false — the
+// actual `if` on the next block is completely untouched.
+notifDiagLog('silent-refresh gate check: notifFab exists =', !!notifFab,
+    '| Notification in window =', ('Notification' in window),
+    '| messaging initialized =', !!messaging,
+    '| Notification.permission =', (typeof Notification !== 'undefined' ? Notification.permission : '(n/a)'),
+    '| isNotifOptedOut() =', isNotifOptedOut());
 if (notifFab && 'Notification' in window && messaging && Notification.permission === 'granted' && !isNotifOptedOut()) {
+    notifDiagLog('silent-refresh gate PASSED — running requestNotificationPermissionAndToken() now, no prompt expected.');
     requestNotificationPermissionAndToken().then(function (result) {
         var payload = { source: 'kahorng-wrapper', type: 'notification-permission-result', granted: result.granted, token: result.token, previousToken: result.previousToken, error: result.error, silent: true };
+        notifDiagLog('silent-refresh result: granted =', result.granted, 'token =', !!result.token, 'error =', result.error);
         if (appSource && appOrigin) {
-            try { appSource.postMessage(payload, appOrigin); } catch (err) { /* app frame gone */ }
+            notifDiagLog('sending silent notification-permission-result to iframe now (appSource already known).');
+            try { appSource.postMessage(payload, appOrigin); } catch (err) { notifDiagLog('postMessage to iframe FAILED:', String(err)); }
         } else {
+            notifDiagLog('appSource not known yet — queuing silent result as pendingNotificationResult until the app says "ready".');
             pendingNotificationResult = payload;
         }
         if (!result.granted || !result.token) {
+            notifDiagLog('silent refresh did NOT produce a usable token — revealing the bell as a manual fallback. This IS a genuine registration failure, not just a UI timing gap.');
             notifFab.hidden = false;
+        } else {
+            notifDiagLog('silent refresh succeeded — bell stays hidden, no user action needed.');
         }
     });
+} else {
+    notifDiagLog('silent-refresh gate FAILED — refresh will NOT run this load (see the sub-condition values just logged above to see which one blocked it). If permission is "granted" and isNotifOptedOut() is false yet this still didn\'t run, that itself is worth flagging.');
 }
 </script>
 </body>

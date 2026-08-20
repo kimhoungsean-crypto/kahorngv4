@@ -93,9 +93,21 @@ iframe{
 // DevTools. Pure console.log/console.error additions only — no existing
 // condition, value, timing, or control flow below is touched. Safe/easy to
 // find and remove: search this file and JavaScript.html for "[NOTIF-DIAG]".
+//
+// TEMP-NOTIF-DIAG-PANEL: window.__notifDiagEvents additionally stashes a
+// copy of each log line (console.log's own behavior/output is completely
+// unchanged) so the in-app diagnostic panel (JavaScript.html, index.html)
+// can display this wrapper's own log without needing Safari Web Inspector.
+// Remove the two lines building/pushing to __notifDiagEvents, and the
+// 'notif-diag-request' branch further down, together with the panel
+// itself, to fully remove this temporary capability.
+window.__notifDiagEvents = [];
 function notifDiagLog() {
     var args = Array.prototype.slice.call(arguments);
-    console.log.apply(console, ['[NOTIF-DIAG][wrapper][' + new Date().toISOString() + ']'].concat(args));
+    var ts = new Date().toISOString();
+    var text = args.map(function (a) { return (a !== null && typeof a === 'object') ? JSON.stringify(a) : String(a); }).join(' ');
+    window.__notifDiagEvents.push({ ts: ts, ctx: 'wrapper', text: text });
+    console.log.apply(console, ['[NOTIF-DIAG][wrapper][' + ts + ']'].concat(args));
 }
 notifDiagLog('wrapper script start. Notification.permission =', (typeof Notification !== 'undefined' ? Notification.permission : '(Notification API unavailable)'));
 try { notifDiagLog('kahorng_notif_optout in localStorage =', localStorage.getItem('kahorng_notif_optout')); } catch (diagErr) { notifDiagLog('kahorng_notif_optout read failed:', String(diagErr)); }
@@ -405,6 +417,12 @@ window.addEventListener('message', function (e) {
         // never inferred from which device ID was removed.
         if (e.data.active === false) setNotifOptedOut();
         else if (e.data.active === true) clearNotifOptedOut(); // defensive: correct a stale flag if this device is in fact still active
+    } else if (e.data.type === 'notif-diag-request') {
+        // TEMP-NOTIF-DIAG-PANEL: read-only relay of this wrapper's own
+        // [NOTIF-DIAG] event log to the app's diagnostic panel. Does not
+        // read, touch, or affect permission/token/service-worker/bell
+        // state in any way — purely echoes window.__notifDiagEvents back.
+        try { e.source.postMessage({ source: 'kahorng-wrapper', type: 'notif-diag-events', events: window.__notifDiagEvents || [] }, e.origin); } catch (err) { /* app frame gone */ }
     }
 });
 

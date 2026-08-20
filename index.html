@@ -169,8 +169,29 @@ function requestNotificationPermissionAndToken() {
     var previousToken = null;
     try { previousToken = localStorage.getItem(FCM_TOKEN_KEY); } catch (err) { /* best-effort */ }
     notifDiagLog('previousToken found locally =', !!previousToken);
-    return Notification.requestPermission().then(function (permission) {
-        notifDiagLog('Notification.requestPermission() resolved:', permission);
+
+    // [FIX] Root cause confirmed via [NOTIF-DIAG]: on iOS, a
+    // Notification.requestPermission() call made without a genuine,
+    // synchronous user gesture (exactly the silent-refresh's situation --
+    // no tap, called automatically on load) can resolve to "denied" even
+    // though the real, current OS-level permission is still "granted".
+    // When permission is ALREADY "granted", Notification.permission itself
+    // is the reliable, current source of truth -- skip re-asking entirely
+    // and go straight into the same token-fetch flow below. When it is
+    // NOT already granted, this still calls Notification.requestPermission()
+    // exactly as before, so the bell's explicit, real-user-gesture flow
+    // (first-time grant, or an actual "denied"/"default" state) is
+    // completely unchanged.
+    var permissionPromise;
+    if (Notification.permission === 'granted') {
+        notifDiagLog('permission already granted -- skipping Notification.requestPermission() entirely (iOS silent-refresh fix).');
+        permissionPromise = Promise.resolve('granted');
+    } else {
+        permissionPromise = Notification.requestPermission();
+    }
+
+    return permissionPromise.then(function (permission) {
+        notifDiagLog('permission resolved (skip-path or requestPermission()):', permission);
         if (permission !== 'granted') return { granted: false, token: null, previousToken: previousToken, error: 'denied' };
         var regPromise = swRegistration
             ? Promise.resolve(swRegistration)
